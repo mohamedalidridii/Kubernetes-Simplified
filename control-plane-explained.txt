@@ -97,8 +97,54 @@ How it Works:
 Key Controllers and Their Interactions:
 
 	- Node Controller:
-		- Watch nodes → Detect unhealthy nodes → Mark as NotReady → 
-		- Evict pods after grace period → API server updates pod status
+		 Watch nodes → Detect unhealthy nodes → Mark as NotReady → 
+		 Evict pods after grace period → API server updates pod status
 
 	- ReplicaSet Controller:
-		
+		Watch ReplicaSets → Count running pods → 
+		If fewer than desired: Create pods via API server →
+		If more than desired: Delete pods via API server
+	- Endpoints Controller:
+		Watch Services & Pods → Match labels → 
+		Update Endpoints object via API server
+	- Service Account Controller:
+		Watch Namespaces → Create default ServiceAccount →
+		Watch ServiceAccounts → Create tokens/secrets
+
+	- Leader Election:
+		Flag: --leader-elect=true
+		Uses lease objects in etcd (via API server)
+		In multi-master: only one controller-manager actively runs
+		Others are in standby, ready to take over within seconds
+
+#
+4. kube-scheduler - The Placement Engine
+Assigns pods to nodes based on constraints and resources
+
+Technical Details:
+Scheduling Flow:
+	1. Watch API server for pods where spec.nodeName == ""
+	2. For each unscheduled pod:
+   		a. Filtering phase: Eliminate unsuitable nodes
+   		b. Scoring phase: Rank remaining nodes
+   		c. Select best node
+	3. Send binding to API server
+	4. API server updates pod.spec.nodeName in etcd
+	5. Kubelet on that node sees pod and starts ita
+
+Filtering Predicates (Examples):
+	- PodFitsResources: Node has enough CPU/memory
+	- PodFitsHostPorts: Host ports are available
+	- MatchNodeSelector: Node matches pod's nodeSelector
+	- PodToleratesNodeTaints: Pod tolerates node taints
+
+Scoring Functions (Examples):
+	- LeastRequestedPriority: Prefers nodes with more available resources
+	- BalancedResourceAllocation: Balances CPU and memory usage
+	- InterPodAffinity: Respects pod affinity/anti-affinity rules
+
+Leader Election:
+	- Flag: --leader-elect=true
+	- Only one scheduler is active in multi-master setups
+	- If active scheduler fails, standby takes over
+
