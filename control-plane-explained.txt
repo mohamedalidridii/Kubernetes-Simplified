@@ -1,0 +1,104 @@
+#
+┌─────────────────────────────────────────────────────────────┐
+│                      Control Plane Node                     │
+│                                                             │
+│  ┌──────────────┐                                           │
+│  │   kubectl    │ (external client)                         │
+│  └──────┬───────┘                                           │
+│         │ HTTPS:6443                                        │
+│         ▼                                                   │
+│  ┌──────────────────────────────────────────┐               │
+│  │        kube-apiserver                    │               │
+│  │  (Central Hub - REST API Frontend)       │               │
+│  └──┬────────┬──────────┬────────────────┬──┘               │
+│     │        │          │                │                  │
+│     │        │          │                │                  │
+│     │ HTTPS  │ HTTPS    │ HTTPS          │ HTTPS            │
+│     │ :2379  │ :10257   │ :10259         │ :10250           │
+│     │        │          │                │                  │
+│     ▼        ▼          ▼                ▼                  │
+│  ┌─────┐ ┌─────────┐ ┌──────────┐    ┌────────┐             │
+│  │etcd │ │controller││scheduler │    │kubelet │             │
+│  │     │ │ manager  ││          │    │(worker)│             │
+│  └─────┘ └─────────┘ └──────────┘    └────────┘             │
+│    ▲                                                        │
+│    │ Direct storage access                                  │
+│    └────────────────────────────────────────────            │
+└─────────────────────────────────────────────────────────────┘
+
+#
+1. etcd - The Database Layer:
+Persistent key-value store for all cluster data
+
+
+Technical Details:
+
+Stores the entire cluster state (pods, services, secrets, configmaps, etc.)
+Provides distributed consensus using Raft algorithm
+Listens on:
+	- Port 2379 for client connections (API server connects here)
+	- Port 2380 for peer-to-peer communication (in multi-master setups)
+	- Port 2381 for metrics
+
+=> etcd is the only stateful component - if etcd data is lost, the entire cluster state is lost.
+
+#
+
+2. kube-apiserver - The Central Hub:
+RESTful API frontend and gateway to the cluster
+
+Technical Relationships:
+
+Connection to etcd:
+API Server → HTTPS:2379 → etcd
+
+	- Only component that directly reads/writes to etcd
+	- Uses client certificates for authentication (apiserver-etcd-client.crt/key)
+	- All cluster state changes flow through: kubectl → API server → etcd
+	- Implements optimistic concurrency control using resource versions
+
+Connection to Controller Manager:
+Controller Manger -> HTTPS:6443 -> API Server
+
+	- Controller manager never talks to etcd directly
+	- Uses /etc/kubernetes/controller-manager.conf kubeconfig to authenticate
+	- Watch API: Controllers set up long-running watches on resources
+		- Example: Deployment controller watches Deployment objects
+		- API server notifies controllers of changes in real-time
+	- Controllers read desired state and write back status updates
+
+Connection to Scheduler:
+Scheduler → HTTPS:6443 → API Server
+
+	- Scheduler authenticates using /etc/kubernetes/scheduler.conf
+	- Watch mechanism:
+		- Watches for pods with spec.nodeName == "" (unscheduled pods)
+		- Makes scheduling decision
+		- Sends binding to API server: POST /api/v1/namespaces/{ns}/pods/{name}/binding
+	- API server updates pod's spec.nodeName field in etcd
+
+Connection to Kubelet (Worker Nodes): 
+API Server ← → HTTPS:10250 ← → Kubelet
+
+	- Bidirectional communication
+	- API server uses apiserver-kubelet-client.crt/key for authentication
+	- Used for: pod logs, exec, port-forward, metrics collection
+
+#
+3. kube-controller-manager - The Reconciliation Engine
+Runs control loops that regulate cluster state
+
+Technical Details:
+How it Works:
+	1- Watch desired state from API server
+	2- Compare with actual state (also from API server)
+	3- Reconcile by making API calls to fix driftA
+
+Key Controllers and Their Interactions:
+
+	- Node Controller:
+		- Watch nodes → Detect unhealthy nodes → Mark as NotReady → 
+		- Evict pods after grace period → API server updates pod status
+
+	- ReplicaSet Controller:
+		
